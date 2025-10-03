@@ -13,7 +13,6 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
         Handle WebSocket connection for video rooms
         """
         try:
-            # Import inside method to avoid circular imports
             from .models import Room
         
             self.room_id = self.scope['url_route']['kwargs']['room_id']
@@ -55,20 +54,20 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                     'type': 'connection_established',
                     'message': 'Connected to room successfully',
                     'room_id': self.room_id,
-                    'userId': self.user_id  # ADD THIS LINE
+                    'userId': self.user_id  # This is crucial
                 }))
                 
-                # Notify all clients about the new participant
+                # Notify all clients about the new participant count
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
                         'type': 'participant_update',
                         'participant_count': room.participant_count,
-                        'message': f'New user joined room. Total participants: {room.participant_count}'
+                        'message': f'Total participants: {room.participant_count}'
                     }
                 )
                 
-                # Send user_joined message to all other clients
+                # Send user_joined message to all OTHER clients
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
@@ -86,7 +85,7 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                     'type': 'connection_established',
                     'message': 'Connected to room successfully',
                     'room_id': self.room_id,
-                    'userId': self.user_id  # ADD THIS LINE
+                    'userId': self.user_id
                 }))
 
         except Exception as e:
@@ -98,7 +97,6 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
         Handle WebSocket disconnection
         """
         try:
-            # Import inside method to avoid circular imports
             from .models import Room
             
             print(f"WebSocket disconnecting from room: {self.room_id}, close code: {close_code}")
@@ -121,7 +119,7 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                         }
                     )
                     
-                    # Send user_left message
+                    # Send user_left message to all OTHER clients
                     await self.channel_layer.group_send(
                         self.room_group_name,
                         {
@@ -156,16 +154,28 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
             text_data_json['senderUserId'] = self.user_id
             
             # Handle different message types
-            if message_type in ['offer', 'answer', 'ice_candidate', 'user_joined', 'user_left']:
-                # Broadcast to all other clients in the room
+            if message_type in ['offer', 'answer', 'ice_candidate']:
+                # Broadcast WebRTC signaling messages to the specific target user
+                target_user_id = text_data_json.get('targetUserId')
+                if target_user_id:
+                    await self.channel_layer.group_send(
+                        self.room_group_name,
+                        {
+                            'type': 'webrtc_signal',
+                            'data': text_data_json,
+                            'sender_channel': self.channel_name,
+                            'target_user_id': target_user_id
+                        }
+                    )
+            elif message_type in ['user_joined', 'user_left']:
+                # Broadcast user status messages to all clients
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
                         'type': 'broadcast_message',
                         'message_type': message_type,
                         'data': text_data_json,
-                        'sender_channel': self.channel_name,
-                        'sender_user_id': self.user_id
+                        'sender_channel': self.channel_name
                     }
                 )
             elif message_type == 'chat_message':
@@ -194,17 +204,36 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                 'error': 'Failed to process message'
             }))
 
+    async def webrtc_signal(self, event):
+        """
+        Handle WebRTC signaling messages (offer, answer, ice_candidate)
+        Only send to the specific target user
+        """
+        try:
+            target_user_id = event['target_user_id']
+            data = event['data']
+            
+            # Only send if this connection is the target
+            if self.user_id == target_user_id:
+                await self.send(text_data=json.dumps({
+                    'type': data['type'],
+                    data['type']: data.get(data['type']),
+                    'userId': event['data'].get('senderUserId'),  # The user who sent this signal
+                    'targetUserId': target_user_id
+                }))
+        except Exception as e:
+            print(f"Error sending WebRTC signal: {str(e)}")
+
     async def broadcast_message(self, event):
         """
-        Broadcast WebRTC messages to all clients except sender
+        Broadcast general messages to all clients except sender
         """
         try:
             if event['sender_channel'] != self.channel_name:
-                # Prepare the message to send
                 message_data = event['data'].copy()
-                # Add the sender's user ID so recipients know who sent it
+                # Ensure the userId is included
                 if 'userId' not in message_data:
-                    message_data['userId'] = event['sender_user_id']
+                    message_data['userId'] = event['data'].get('senderUserId', '')
                 
                 await self.send(text_data=json.dumps({
                     'type': event['message_type'],
@@ -215,7 +244,7 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
 
     async def user_joined(self, event):
         """
-        Handle user joined messages
+        Handle user joined messages - send to all OTHER clients
         """
         try:
             if event['sender_channel'] != self.channel_name:
@@ -230,7 +259,7 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
 
     async def user_left(self, event):
         """
-        Handle user left messages
+        Handle user left messages - send to all OTHER clients
         """
         try:
             if event['sender_channel'] != self.channel_name:

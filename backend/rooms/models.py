@@ -22,3 +22,5 @@ class Room(models.Model):
         if self.pk:
             self.participant_count = self.participants.count()
         super().save(*args, **kwargs)
+
+        
