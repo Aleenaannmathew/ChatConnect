@@ -2,6 +2,9 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { joinRoom } from './roomSlice';
+import { ToastContainer, toast } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
 
 export default function VideoRoom() {
     const { roomId } = useParams();
@@ -135,7 +138,7 @@ export default function VideoRoom() {
                 setParticipantCount(data.participant_count || 1);
                 setConnectionStatus('Ready');
                 dispatch(joinRoom(roomId)).catch(console.error);
-                
+
                 // Connect to existing users
                 if (data.existing_users && data.existing_users.length > 0) {
                     console.log('👥 Connecting to existing users:', data.existing_users);
@@ -221,7 +224,7 @@ export default function VideoRoom() {
         if (peerConnections.current.has(userId)) {
             const existingPc = peerConnections.current.get(userId);
             console.log(`ℹ️ Peer connection already exists for ${userId}, state: ${existingPc.signalingState}`);
-            
+
             // If existing connection is in a bad state and we should be the offerer, recreate it
             if (isOfferer && (existingPc.signalingState === 'stable' || existingPc.signalingState === 'closed')) {
                 console.log('🔄 Recreating peer connection for:', userId);
@@ -376,7 +379,7 @@ export default function VideoRoom() {
 
     const handleOffer = async (offer, fromUserId) => {
         console.log('📨 Handling offer from:', fromUserId);
-        
+
         const stream = localStreamRef.current;
         if (!stream) {
             console.error('❌ Cannot handle offer: no local stream');
@@ -384,10 +387,10 @@ export default function VideoRoom() {
         }
 
         let pc = peerConnections.current.get(fromUserId);
-        
+
         // Check if we should handle this offer or ignore it (collision resolution)
         const shouldAcceptOffer = !currentUserIdRef.current || currentUserIdRef.current > fromUserId;
-        
+
         if (pc && pc.signalingState !== 'stable') {
             if (!shouldAcceptOffer) {
                 console.log('⚠️ Ignoring offer due to signaling collision, we are the offerer');
@@ -398,7 +401,7 @@ export default function VideoRoom() {
             peerConnections.current.delete(fromUserId);
             pc = null;
         }
-        
+
         if (!pc) {
             console.log('🆕 Creating peer connection to handle offer from:', fromUserId);
             pc = createPeerConnection(fromUserId, false);
@@ -500,7 +503,7 @@ export default function VideoRoom() {
 
     const closeConnection = (userId) => {
         console.log('🗑️ Closing connection for:', userId);
-        
+
         const pc = peerConnections.current.get(userId);
         if (pc) {
             pc.close();
@@ -572,9 +575,13 @@ export default function VideoRoom() {
 
     const copyRoomLink = () => {
         const link = `${window.location.origin}/join?room=${roomId}`;
-        navigator.clipboard.writeText(link).then(() => {
-            alert('Meeting link copied!');
-        });
+        navigator.clipboard.writeText(link)
+            .then(() => {
+                toast.success('Meeting link copied!');
+            })
+            .catch(() => {
+                toast.error('Failed to copy link.');
+            });
     };
 
     const leaveRoom = () => {
@@ -664,9 +671,8 @@ export default function VideoRoom() {
                 <div className="bg-gray-800 rounded-full px-6 py-3 flex gap-4 shadow-lg">
                     <button
                         onClick={toggleAudio}
-                        className={`p-3 rounded-full transition-colors ${
-                            isAudioOn ? 'bg-gray-600 hover:bg-gray-500' : 'bg-red-600 hover:bg-red-500'
-                        }`}
+                        className={`p-3 rounded-full transition-colors ${isAudioOn ? 'bg-gray-600 hover:bg-gray-500' : 'bg-red-600 hover:bg-red-500'
+                            }`}
                         title={isAudioOn ? 'Mute' : 'Unmute'}
                     >
                         {isAudioOn ? '🎤' : '🔇'}
@@ -674,9 +680,8 @@ export default function VideoRoom() {
 
                     <button
                         onClick={toggleVideo}
-                        className={`p-3 rounded-full transition-colors ${
-                            isVideoOn ? 'bg-gray-600 hover:bg-gray-500' : 'bg-red-600 hover:bg-red-500'
-                        }`}
+                        className={`p-3 rounded-full transition-colors ${isVideoOn ? 'bg-gray-600 hover:bg-gray-500' : 'bg-red-600 hover:bg-red-500'
+                            }`}
                         title={isVideoOn ? 'Stop Video' : 'Start Video'}
                     >
                         {isVideoOn ? '📹' : '📷'}
