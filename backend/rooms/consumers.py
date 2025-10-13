@@ -1,23 +1,22 @@
 import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async
 from asgiref.sync import sync_to_async
 import uuid
 
 logger = logging.getLogger(__name__)
 
 class VideoRoomConsumer(AsyncWebsocketConsumer):
+    # Class-level storage for active users per room
+    active_users = {}  # {room_id: set(user_ids)}
+
     async def connect(self):
-        """
-        Handle WebSocket connection for video rooms
-        """
+        """Handle WebSocket connection for video rooms"""
         try:
             from .models import Room
         
             self.room_id = self.scope['url_route']['kwargs']['room_id']
             self.room_group_name = f'room_{self.room_id}'
-            # Generate a unique user ID for this connection
             self.user_id = str(uuid.uuid4())
         
             print(f"WebSocket connection attempt for room: {self.room_id}, user: {self.user_id}")
@@ -43,21 +42,32 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
         
             # Update participant count
             try:
-                # Increment participant count
                 room.participant_count += 1
                 await sync_to_async(room.save)()
                 
+                # Add user to active users list
+                if self.room_id not in self.active_users:
+                    self.active_users[self.room_id] = set()
+                
+                # Get existing users before adding new one
+                existing_users = list(self.active_users[self.room_id])
+                print(f"Existing users in room: {existing_users}")
+                
+                self.active_users[self.room_id].add(self.user_id)
+                
                 print(f"Updated participant count for room {self.room_id}: {room.participant_count}")
                 
-                # Send connection confirmation WITH USER ID
+                # Send connection confirmation WITH USER ID and EXISTING USERS
                 await self.send(text_data=json.dumps({
                     'type': 'connection_established',
                     'message': 'Connected to room successfully',
                     'room_id': self.room_id,
-                    'userId': self.user_id  # This is crucial
+                    'userId': self.user_id,
+                    'participant_count': room.participant_count,
+                    'existing_users': existing_users  # Send list of existing users
                 }))
                 
-                # Notify all clients about the new participant count
+                # Notify ALL clients (including sender) about participant update
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
@@ -67,11 +77,11 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                     }
                 )
                 
-                # Send user_joined message to all OTHER clients
+                # Notify OTHER clients that a new user joined
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
-                        'type': 'user_joined',
+                        'type': 'user_joined_notification',
                         'userId': self.user_id,
                         'username': f'User_{self.user_id[:8]}',
                         'participant_count': room.participant_count,
@@ -81,25 +91,33 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                 
             except Exception as e:
                 print(f"Error updating participant count: {str(e)}")
-                await self.send(text_data=json.dumps({
-                    'type': 'connection_established',
-                    'message': 'Connected to room successfully',
-                    'room_id': self.room_id,
-                    'userId': self.user_id
-                }))
 
         except Exception as e:
             print(f"Unexpected error in connect: {str(e)}")
             await self.close(code=4000)
 
     async def disconnect(self, close_code):
-        """
-        Handle WebSocket disconnection
-        """
+        """Handle WebSocket disconnection"""
         try:
             from .models import Room
             
             print(f"WebSocket disconnecting from room: {self.room_id}, close code: {close_code}")
+            
+            # Remove user from active users
+            if self.room_id in self.active_users:
+                self.active_users[self.room_id].discard(self.user_id)
+                if not self.active_users[self.room_id]:
+                    del self.active_users[self.room_id]
+            
+            # Notify others BEFORE leaving the group
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'user_left_notification',
+                    'userId': self.user_id,
+                    'sender_channel': self.channel_name
+                }
+            )
             
             # Update participant count
             try:
@@ -109,23 +127,13 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
                     await sync_to_async(room.save)()
                     print(f"Updated participant count for room {self.room_id}: {room.participant_count}")
                     
-                    # Notify all clients in the room about the updated participant count
+                    # Notify all clients about updated participant count
                     await self.channel_layer.group_send(
                         self.room_group_name,
                         {
                             'type': 'participant_update',
                             'participant_count': room.participant_count,
                             'message': f'User left room. Total participants: {room.participant_count}'
-                        }
-                    )
-                    
-                    # Send user_left message to all OTHER clients
-                    await self.channel_layer.group_send(
-                        self.room_group_name,
-                        {
-                            'type': 'user_left',
-                            'userId': self.user_id,
-                            'sender_channel': self.channel_name
                         }
                     )
             except Exception as e:
@@ -141,163 +149,159 @@ class VideoRoomConsumer(AsyncWebsocketConsumer):
             print(f"Unexpected error in disconnect: {str(e)}")
 
     async def receive(self, text_data):
-        """
-        Handle messages received from WebSocket
-        """
+        """Handle messages received from WebSocket"""
         try:
-            text_data_json = json.loads(text_data)
-            message_type = text_data_json.get('type', '')
+            data = json.loads(text_data)
+            message_type = data.get('type', '')
             
-            print(f"Received message of type '{message_type}' in room {self.room_id} from user {self.user_id}")
+            print(f"Received message type '{message_type}' from user {self.user_id}")
             
-            # Add sender user ID to the message
-            text_data_json['senderUserId'] = self.user_id
+            # Add sender info
+            data['senderUserId'] = self.user_id
+            data['sender_channel'] = self.channel_name
             
-            # Handle different message types
-            if message_type in ['offer', 'answer', 'ice_candidate']:
-                # Broadcast WebRTC signaling messages to the specific target user
-                target_user_id = text_data_json.get('targetUserId')
-                if target_user_id:
-                    await self.channel_layer.group_send(
-                        self.room_group_name,
-                        {
-                            'type': 'webrtc_signal',
-                            'data': text_data_json,
-                            'sender_channel': self.channel_name,
-                            'target_user_id': target_user_id
-                        }
-                    )
-            elif message_type in ['user_joined', 'user_left']:
-                # Broadcast user status messages to all clients
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'broadcast_message',
-                        'message_type': message_type,
-                        'data': text_data_json,
-                        'sender_channel': self.channel_name
-                    }
-                )
+            # Route message based on type
+            if message_type == 'offer':
+                await self.handle_offer(data)
+            elif message_type == 'answer':
+                await self.handle_answer(data)
+            elif message_type == 'ice_candidate':
+                await self.handle_ice_candidate(data)
             elif message_type == 'chat_message':
-                message = text_data_json.get('message', '')
-                username = text_data_json.get('username', 'Anonymous')
-                
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'chat_message',
-                        'message': message,
-                        'username': username
-                    }
-                )
+                await self.handle_chat_message(data)
             else:
                 print(f"Unknown message type: {message_type}")
 
         except json.JSONDecodeError:
             print("Invalid JSON received")
-            await self.send(text_data=json.dumps({
-                'error': 'Invalid JSON format'
-            }))
+            await self.send(text_data=json.dumps({'error': 'Invalid JSON format'}))
         except Exception as e:
             print(f"Error processing received message: {str(e)}")
+
+    async def handle_offer(self, data):
+        """Handle WebRTC offer"""
+        target_user_id = data.get('targetUserId')
+        if not target_user_id:
+            print("No target user ID in offer")
+            return
+            
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'webrtc_offer',
+                'offer': data.get('offer'),
+                'sender_user_id': self.user_id,
+                'target_user_id': target_user_id,
+                'sender_channel': self.channel_name
+            }
+        )
+
+    async def handle_answer(self, data):
+        """Handle WebRTC answer"""
+        target_user_id = data.get('targetUserId')
+        if not target_user_id:
+            print("No target user ID in answer")
+            return
+            
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'webrtc_answer',
+                'answer': data.get('answer'),
+                'sender_user_id': self.user_id,
+                'target_user_id': target_user_id,
+                'sender_channel': self.channel_name
+            }
+        )
+
+    async def handle_ice_candidate(self, data):
+        """Handle ICE candidate"""
+        target_user_id = data.get('targetUserId')
+        if not target_user_id:
+            print("No target user ID in ICE candidate")
+            return
+            
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'webrtc_ice',
+                'candidate': data.get('candidate'),
+                'sender_user_id': self.user_id,
+                'target_user_id': target_user_id,
+                'sender_channel': self.channel_name
+            }
+        )
+
+    async def handle_chat_message(self, data):
+        """Handle chat message"""
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'chat_message_broadcast',
+                'message': data.get('message', ''),
+                'username': data.get('username', 'Anonymous'),
+                'sender_channel': self.channel_name
+            }
+        )
+
+    # Group message handlers
+    async def webrtc_offer(self, event):
+        """Send offer to specific target user"""
+        if self.user_id == event['target_user_id']:
             await self.send(text_data=json.dumps({
-                'error': 'Failed to process message'
+                'type': 'offer',
+                'offer': event['offer'],
+                'userId': event['sender_user_id']
             }))
 
-    async def webrtc_signal(self, event):
-        """
-        Handle WebRTC signaling messages (offer, answer, ice_candidate)
-        Only send to the specific target user
-        """
-        try:
-            target_user_id = event['target_user_id']
-            data = event['data']
-            
-            # Only send if this connection is the target
-            if self.user_id == target_user_id:
-                await self.send(text_data=json.dumps({
-                    'type': data['type'],
-                    data['type']: data.get(data['type']),
-                    'userId': event['data'].get('senderUserId'),  # The user who sent this signal
-                    'targetUserId': target_user_id
-                }))
-        except Exception as e:
-            print(f"Error sending WebRTC signal: {str(e)}")
-
-    async def broadcast_message(self, event):
-        """
-        Broadcast general messages to all clients except sender
-        """
-        try:
-            if event['sender_channel'] != self.channel_name:
-                message_data = event['data'].copy()
-                # Ensure the userId is included
-                if 'userId' not in message_data:
-                    message_data['userId'] = event['data'].get('senderUserId', '')
-                
-                await self.send(text_data=json.dumps({
-                    'type': event['message_type'],
-                    **message_data
-                }))
-        except Exception as e:
-            print(f"Error broadcasting message: {str(e)}")
-
-    async def user_joined(self, event):
-        """
-        Handle user joined messages - send to all OTHER clients
-        """
-        try:
-            if event['sender_channel'] != self.channel_name:
-                await self.send(text_data=json.dumps({
-                    'type': 'user_joined',
-                    'userId': event['userId'],
-                    'username': event.get('username', 'Anonymous'),
-                    'participant_count': event.get('participant_count', 0)
-                }))
-        except Exception as e:
-            print(f"Error sending user joined message: {str(e)}")
-
-    async def user_left(self, event):
-        """
-        Handle user left messages - send to all OTHER clients
-        """
-        try:
-            if event['sender_channel'] != self.channel_name:
-                await self.send(text_data=json.dumps({
-                    'type': 'user_left',
-                    'userId': event['userId']
-                }))
-        except Exception as e:
-            print(f"Error sending user left message: {str(e)}")
-
-    async def chat_message(self, event):
-        """
-        Handle chat messages from room group
-        """
-        try:
-            message = event['message']
-            username = event['username']
-            
+    async def webrtc_answer(self, event):
+        """Send answer to specific target user"""
+        if self.user_id == event['target_user_id']:
             await self.send(text_data=json.dumps({
-                'type': 'chat_message',
-                'message': message,
-                'username': username
+                'type': 'answer',
+                'answer': event['answer'],
+                'userId': event['sender_user_id']
             }))
-        except Exception as e:
-            print(f"Error sending chat message: {str(e)}")
+
+    async def webrtc_ice(self, event):
+        """Send ICE candidate to specific target user"""
+        if self.user_id == event['target_user_id']:
+            await self.send(text_data=json.dumps({
+                'type': 'ice_candidate',
+                'candidate': event['candidate'],
+                'userId': event['sender_user_id']
+            }))
+
+    async def user_joined_notification(self, event):
+        """Notify about new user (exclude sender)"""
+        if event['sender_channel'] != self.channel_name:
+            await self.send(text_data=json.dumps({
+                'type': 'user_joined',
+                'userId': event['userId'],
+                'username': event.get('username', 'Anonymous'),
+                'participant_count': event.get('participant_count', 0)
+            }))
+
+    async def user_left_notification(self, event):
+        """Notify about user leaving (exclude sender)"""
+        if event['sender_channel'] != self.channel_name:
+            await self.send(text_data=json.dumps({
+                'type': 'user_left',
+                'userId': event['userId']
+            }))
 
     async def participant_update(self, event):
-        """
-        Handle participant count updates
-        """
-        try:
-            participant_count = event['participant_count']
-            message = event.get('message', '')
-            
-            await self.send(text_data=json.dumps({
-                'type': 'participant_update',
-                'participant_count': participant_count,
-                'message': message
-            }))
-        except Exception as e:
-            print(f"Error sending participant update: {str(e)}")
+        """Send participant count update to all"""
+        await self.send(text_data=json.dumps({
+            'type': 'participant_update',
+            'participant_count': event['participant_count'],
+            'message': event.get('message', '')
+        }))
+
+    async def chat_message_broadcast(self, event):
+        """Broadcast chat message to all"""
+        await self.send(text_data=json.dumps({
+            'type': 'chat_message',
+            'message': event['message'],
+            'username': event['username']
+        }))
