@@ -38,20 +38,6 @@ Frontend (React)
 ✅ Redux Toolkit for state management
 
 
-🛠️ Tech Stack
-LayerTechnologiesFrontendReact 18, Redux Toolkit, Axios, React Toastify, Tailwind CSSBackendDjango 5.2, Django REST Framework, Simple JWTWebSocketDjango Channels, Channels RedisVideoWebRTC (peer-to-peer)DatabaseSQLite (development) / PostgreSQL (production)Testingpytest, pytest-django, pytest-asyncioDevOpsRedis (Channel Layer), Daphne (ASGI server)
-
-🏗️ Architecture
-┌─────────────┐         ┌──────────────┐         ┌─────────────┐
-│   React     │  HTTP   │   Django     │  Redis  │   WebSocket │
-│   Frontend  │◄───────►│   Backend    │◄───────►│   Consumer  │
-│             │  JWT    │   (REST API) │ Channels│             │
-└─────────────┘         └──────────────┘         └─────────────┘
-       │                                                  │
-       │                  WebRTC (P2P)                   │
-       └──────────────────────────────────────────────────┘
-           Signaling via WebSocket (offer/answer/ICE)
-
 🚀 Setup Instructions
 Prerequisites
 
@@ -169,73 +155,6 @@ Test Coverage
 ✅ Full integration flow (register → login → create room → logout)
 
 
-📁 Project Structure
-chatconnect/
-│
-├── backend/
-│   ├── config/                 # Django project settings
-│   │   ├── settings.py
-│   │   ├── urls.py
-│   │   ├── asgi.py            # ASGI config for Channels
-│   │   └── wsgi.py
-│   │
-│   ├── users/                  # Authentication app
-│   │   ├── models.py          # Custom User model
-│   │   ├── serializers.py     # User serializers
-│   │   ├── views.py           # Register/Login/Logout views
-│   │   ├── urls.py
-│   │   └── tests/
-│   │       └── test_auth_complete.py
-│   │
-│   ├── rooms/                  # Room management app
-│   │   ├── models.py          # Room model
-│   │   ├── serializers.py     # Room serializers
-│   │   ├── views.py           # Room CRUD operations
-│   │   ├── consumers.py       # WebSocket consumer
-│   │   ├── routing.py         # WebSocket routing
-│   │   ├── urls.py
-│   │   └── tests/
-│   │       └── test_rooms.py
-│   │
-│   ├── tests/
-│   │   └── test_integration.py  # Integration tests
-│   │
-│   ├── manage.py
-│   ├── requirements.txt
-│   ├── pytest.ini
-│   └── db.sqlite3
-│
-└── frontend/
-    ├── src/
-    │   ├── app/
-    │   │   ├── store.js       # Redux store
-    │   │   └── axios.js       # Axios config with interceptors
-    │   │
-    │   ├── components/
-    │   │   └── Navbar.jsx
-    │   │
-    │   ├── features/
-    │   │   ├── auth/
-    │   │   │   ├── authSlice.js
-    │   │   │   ├── Login.jsx
-    │   │   │   └── Signup.jsx
-    │   │   │
-    │   │   └── rooms/
-    │   │       ├── roomSlice.js
-    │   │       ├── CreateRoom.jsx
-    │   │       ├── JoinRoom.jsx
-    │   │       └── VideoRoom.jsx
-    │   │
-    │   ├── pages/
-    │   │   └── Home.jsx
-    │   │
-    │   ├── App.jsx
-    │   ├── main.jsx
-    │   └── index.css
-    │
-    ├── package.json
-    ├── vite.config.js
-    └── .env
 
 🔧 Environment Variables
 Backend (.env - optional)
